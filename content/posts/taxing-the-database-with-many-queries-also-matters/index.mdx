@@ -22,8 +22,6 @@ However, that is not the real story. This brenchmark matters only for specific d
 
 _Because query count is also something that degrades under production conditions._
 
----
-
 ## What's eager loading?
 
 As the name suggests, it's **anxious**.
@@ -38,7 +36,7 @@ It's like SQL called inside a loop.
 
 ### N+1 examples
 
-```ruby
+```markdown
 # Bad example
 
 # Let's say we're limited to 10 posts.
@@ -69,10 +67,10 @@ end
 => SELECT * FROM comments WHERE comments.post_id = 10
 ```
 
-</br>
-</br>
+<br />
+<br />
 
-```ruby
+```markdown
 # Good example
 
 # Again, let's say we're limited to 10 posts.
@@ -126,9 +124,7 @@ Did I mention the **connection pool**? One database connection is an **expensive
 
 Connections pool are limited and a typical Rails request run many queries that keep an alive connection. That also translates to: **one request holding one connection pool = bad for concurrent environments.**
 
-One way to measure a query comes to: `network round trip + framework machinery + database machinery`
-
----
+One way to measure a query comes to: **network round trip + framework machinery + database machinery**
 
 ## Its limitations
 
@@ -142,11 +138,7 @@ The `LEFT OUTER JOIN` query is one of the most **expensive operation** and we sh
 
 In addition to the **memory bloat** problem, Rails eager loading also **doesn't handle unnecessary assoctiation**. It also require **human effort to detect** them and we **fix one instance** at time.
 
----
-
-## Conclusion
-
-_We really want to talk little to database!_
+## We really want to talk little to database!
 
 Yeah, that's what I've learned, but is Rails `#includes` method the one fix solution to load associations?
 

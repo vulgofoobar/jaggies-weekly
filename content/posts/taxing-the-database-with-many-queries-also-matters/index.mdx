@@ -1,0 +1,164 @@
+---
+title: "Taxing the database with many queries also matters"
+date: 2026-09-29
+description:
+tags:
+  - dev
+  - database
+  - performance
+  - english
+banner:
+---
+
+## Introduction
+
+Recently, I've taking some mentoring classes and we've been discussing the **N+1** query problems in Rails.
+
+Did you know that in one of my local tests, the N+1 example (no eager load with 51 queries in total) actually ran faster than an eagerly loaded code snippet (2 queries in total).
+
+Worth mention that this was done under small dataset.
+
+However, that is not the real story. This brenchmark matters only for specific dataset and database location.
+
+_Because query count is also something that degrades under production conditions._
+
+---
+
+## What's eager loading?
+
+As the name suggests, it's **anxious**.
+
+It's a **technique** to load **associations in advance** in the same query into **RAM**.
+
+## What's N+1 query?
+
+In a nutshell, it's when an item access **associations** and then it run an **additional query** for each assoctiation.
+
+It's like SQL called inside a loop.
+
+### N+1 examples
+
+```ruby
+# Bad example
+
+# Let's say we're limited to 10 posts.
+# Let's also say that each post has one comment.
+
+# Here we have no query yet, just a lazy `Relation` object.
+posts = Post.limit(10)
+# Even worse if...
+# posts = Post.all
+
+# The query fires when the `Relation` object is evaluated. For example, by the `#each` method.
+posts.each do |post|
+  puts post.title; post.comments.each { |comment| puts "  - #{comment.body}" }
+end
+
+# Here we have 1 query for posts + n queries for comments on each post.
+# There are 11 queries in total.
+=> SELECT * FROM posts LIMIT 10
+=> SELECT * FROM comments WHERE comments.post_id = 1
+=> SELECT * FROM comments WHERE comments.post_id = 2
+=> SELECT * FROM comments WHERE comments.post_id = 3
+=> SELECT * FROM comments WHERE comments.post_id = 4
+=> SELECT * FROM comments WHERE comments.post_id = 5
+=> SELECT * FROM comments WHERE comments.post_id = 6
+=> SELECT * FROM comments WHERE comments.post_id = 7
+=> SELECT * FROM comments WHERE comments.post_id = 8
+=> SELECT * FROM comments WHERE comments.post_id = 9
+=> SELECT * FROM comments WHERE comments.post_id = 10
+```
+
+</br>
+</br>
+
+```ruby
+# Good example
+
+# Again, let's say we're limited to 10 posts.
+# Let's also say that each post has one comment.
+
+# Here we're eager-loading the post comments with the Rails `#includes` method.
+# This also returns a lazy `Relation` object.
+posts = Post.includes(:comments).limit(10)
+
+# The query fires when the `Relation` object is evaluated. For example, by the `#each` method.
+posts.each do |post|
+  puts post.title; post.comments.each { |comment| puts "  - #{comment.body}" }
+end
+
+# Now we don't have the N+1 problem anymore.
+# The way things are designed there's no "partial result set".
+# To build comments corretly, Rails has to:
+# 1) Load all posts so it knows every post's `id`
+# 2) Load all comments so it can group them by `post_id`
+# Now we have one query for posts and one query for comments with `comments.post_id IN`.
+# There are 2 queries in total.
+=> SELECT * FROM posts LIMIT 10
+=> SELECT * FROM comments WHERE comments.post_id IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+```
+
+> 📝 **Note**
+>
+> Why do we see additional queries when using PostgreSQL? This happens because PostgreSQL cache things differently. On the PostgreSQL adapter's first query, it queries internal system catalog tables. So a two-strategy association load executes 6 queries intead of 2.
+
+## The memory bloat problem
+
+As mentioned in our example, to build comments correctly Rails has to load all posts and comments. 
+
+Hitting a popular database table means the **entire result set gets loaded into memory** and if the request takes too long even the garbage collector can't reclaim that memory space. 
+
+That's why unused `#includes` are also **bad**.
+
+## One simple query measures
+
+A bunch of things happen when we query the database.
+
+_One simple query_ traveling over the internet can matter significantly for network **latency** purposes, particularly when the database is located in a different geographic region.
+
+_One simple query_ causes **CPU and I/O servers spikes**.
+
+Under the hood it triggers Rails internals. A `Relation` object turn into actual SQL using `AREL`. Rails fires typecasting, sanitazation, connection pool checking and schema cache checking. Additionally, a query fires `sql.active_record` event and back from the database it re-typecast and map the results set into a Ruby objects.
+
+_One simple query_ triggers the database server parse, plan, execute and the raw result set return.
+
+Did I mention the **connection pool**? One database connection is an **expensive** thing. It involves, for example, TCP handshake, authentication, session setup and SSL negociation. Overhead would dominate response times if a brand new connection to the database is needed to run every query. To overdue that, `ActiveRecord` keeps a pool of already-open connections.
+
+Connections pool are limited and a typical Rails request run many queries that keep an alive connection. That also translates to: **one request holding one connection pool = bad for concurrent environments.**
+
+One way to measure a query comes to: `network round trip + framework machinery + database machinery`
+
+---
+
+## Its limitations
+
+We don't know how many or which queries are being triggered.
+
+The way Rails and its ORM converts data between incompatible type systems sometimes make things seems magical, but that also has a downsize: under the hood, we don't know what's happening.
+
+The `#includes` Rails method shadows things. It auto picks between two strategies to load associations: one we have seem in our examples with **two separeted queries** and another strategy that **always uses a LEFT OUTER JOIN**.
+
+The `LEFT OUTER JOIN` query is one of the most **expensive operation** and we should avoid it if we can.
+
+In addition to the **memory bloat** problem, Rails eager loading also **doesn't handle unnecessary assoctiation**. It also require **human effort to detect** them and we **fix one instance** at time.
+
+---
+
+## Conclusion
+
+_We really want to talk little to database!_
+
+Yeah, that's what I've learned, but is Rails `#includes` method the one fix solution to load associations?
+
+And my answer is: _it depends._
+
+Well, it might save us from having the N+1 queries that pop up in logs, but that might not be it.
+
+We should look carefully: is `#includes` using the `LEFT OUTER JOIN` strategy and we can avoid it somehow? Are we aware of the size of the database that is going to be loaded into server memory? Are we testing with real, production-ready test dataset? Can we avoid calling the `#count` method on a model since it triggers a separate query? Are we using counter cache as an alternative to calling `#count` and are we aware that counter cache runs an additional query that might affect a write-heavy application?
+
+Questions like these might slightly change how we approach a "one solution for everything" mindset and that includes `#includes` 😅.
+
+**Thank you for reading!**
+
+Want to help me? If these steps ever helped you out or wanna keep me excited on
+sharing learning techniques like this? Consider <a href="https://buymeacoffee.com/vulgofoobar">**buying me a coffee**</a> or supporting me on <a href="https://ko-fi.com/vulgofoobar">**Ko-fi**</a>.
